@@ -5,7 +5,7 @@ ENV['COCOAPODS_DISABLE_STATS'] = "true"
 def all_pods
   #use_frameworks!
   inhibit_all_warnings!
-  pod 'AFNetworking'
+  pod 'TRVSURLSessionOperation'
 end
 
 target 'carnegie-objc' do

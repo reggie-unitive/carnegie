@@ -6,8 +6,9 @@
 //  Copyright © 2018 Reggie Seagraves. All rights reserved.
 //
 
-#import <AFNetworking/AFNetworking.h>
-#import <Foundation/Foundation.h>
+// Please note that as this code wants to be used in a mobile environment, we are using the NSDowloadsDirectory to do our work.
+
+#import <TRVSURLSessionOperation/TRVSURLSessionOperation.h>
 
 void fileAppendData(NSURL* targetFileURL, NSData* data) {
   NSString* filePath = [targetFileURL path];
@@ -21,35 +22,40 @@ void fileAppendData(NSURL* targetFileURL, NSData* data) {
   }
 }
 
-static int sCurrentParts = -1;
-
-void download(NSURL* url, int parts, int size, NSString* basename) {
-  sCurrentParts = parts;
+void download(NSURL* url, int parts, int size, NSString* filename) {
+  // delete our specified output file
   NSURL* documentsDirectoryURL = [[NSFileManager defaultManager] URLForDirectory:NSDownloadsDirectory inDomain:NSUserDomainMask appropriateForURL:nil create:NO error:nil];
-  NSURL* targetFileURL = [documentsDirectoryURL URLByAppendingPathComponent:basename];
+  NSURL* targetFileURL = [documentsDirectoryURL URLByAppendingPathComponent:filename];
   [[NSFileManager defaultManager] removeItemAtURL:targetFileURL error:nil];
+
+  // the queue is intially parallel with no restrictions
+  NSOperationQueue* queue = [[NSOperationQueue alloc] init];
+  // create a url session
+  NSURLSession* session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]];
+
+  // create and queue up background tasks to download parts to temporary files and wait for all downloads to complete
   for (int i = 0; i < parts; ++i) {
-    @autoreleasepool {
-      NSURLSessionConfiguration *configuration = [NSURLSessionConfiguration defaultSessionConfiguration];
-      AFURLSessionManager* manager = [[AFURLSessionManager alloc] initWithSessionConfiguration:configuration];
-      NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
-      NSString* bytesString = [NSString stringWithFormat:@"bytes=%d-%d", i * size, (i + 1) * size - 1];
-      [request addValue:bytesString forHTTPHeaderField:@"Range"];
-      NSURLSessionDownloadTask* downloadTask = [manager downloadTaskWithRequest:request progress:nil destination:^NSURL *(NSURL *targetPath, NSURLResponse *response) {
-        NSString* filenameString = [NSString stringWithFormat:@"%@.%@", basename, bytesString];
-        return [documentsDirectoryURL URLByAppendingPathComponent:filenameString];
-      } completionHandler:^(NSURLResponse *response, NSURL *filePath, NSError *error) {
-        NSData* fileData = [NSData dataWithContentsOfURL:filePath];
-        fileAppendData(targetFileURL, fileData);
-        [[NSFileManager defaultManager] removeItemAtURL:filePath error:nil];
-        --sCurrentParts;
-      }];
-      [downloadTask resume];
-    }
+    // set up url request
+    NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
+    NSString* bytesString = [NSString stringWithFormat:@"bytes=%d-%d", i * size, (i + 1) * size - 1];
+    [request addValue:bytesString forHTTPHeaderField:@"Range"];
+    // construct an operation and add it to the queue
+    [queue addOperation:[[TRVSURLSessionOperation alloc] initWithSession:session request:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+      NSURL* resultURL = [documentsDirectoryURL URLByAppendingPathComponent:[NSString stringWithFormat:@"%@.%@", filename, bytesString]];
+      NSLog(@"resultURL %@", resultURL);
+      [data writeToURL:resultURL atomically:YES];
+    }]];
   }
-  NSRunLoop *theRL = [NSRunLoop currentRunLoop];
-  while (sCurrentParts != 0 && [theRL runMode:NSDefaultRunLoopMode beforeDate:[NSDate distantFuture]]);
-  NSLog(@"downloaded %@ to %@", url, [targetFileURL absoluteString]);
+  [queue waitUntilAllOperationsAreFinished];
+  NSLog(@"All download requests are complete, merging and deleting temporary files!");
+  // Now, let's merge all our temporary files and delete them
+  for (int i = 0; i < parts; ++i) {
+    NSString* bytesString = [NSString stringWithFormat:@"bytes=%d-%d", i * size, (i + 1) * size - 1];
+    NSURL* resultURL = [documentsDirectoryURL URLByAppendingPathComponent:[NSString stringWithFormat:@"%@.%@", filename, bytesString]];
+    NSData* data = [NSData dataWithContentsOfURL:resultURL];
+    fileAppendData(targetFileURL, data);
+    [[NSFileManager defaultManager] removeItemAtURL:resultURL error:nil];
+  }
 }
 
 int main(int argc, const char * argv[]) {
@@ -61,10 +67,11 @@ int main(int argc, const char * argv[]) {
     } else if (argc == 3) {
       urlString = [NSString stringWithFormat:@"%s", argv[1]];
       outputFilenameString = [NSString stringWithFormat:@"%s", argv[2]];
-    } else {
+    } else if (argc != 1) {
       NSLog(@"%@", [NSString stringWithFormat:@"usage %s <urlstring> [<filename>]", argv[0]]);
       return -1;
     }
+    NSLog(@"donwloading url %@ to %@", urlString, outputFilenameString);
     NSURL* url = [NSURL URLWithString:urlString];
     download(url, 4, 1 * 1024 * 1024, outputFilenameString);
   }
